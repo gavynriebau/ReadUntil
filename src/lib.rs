@@ -1,58 +1,67 @@
-use std::io::Error;
 use std::io::Read;
-use std::sync::mpsc::channel;
+use std::sync::mpsc::{sync_channel, Receiver, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-struct XXX {
-    reader: dyn Read
+const CHANNEL_BUFFER_SIZE_BYTES: usize = 1024;
+const SLEEP_DURATION_WHEN_AWAITING_DATA_MS: u64 = 1;
+
+pub struct ReadUntil {
+    receiver: Receiver<u8>,
+    timeout: Duration,
 }
 
-pub trait ReadUntilOrTimeout {
-    fn read_until_or_timeout<F>(self, predicate: F) -> Result<Vec<u8>, Error>
-    where
-        F: Fn(&mut [u8]) -> bool,
-        F: Send;
+#[derive(Debug)]
+pub enum ReadUntilError {
+    Timeout,
+    Disconnected
 }
 
-impl<T: 'static> ReadUntilOrTimeout for T
-where
-    T: Read,
-    T: Send,
-{
-    fn read_until_or_timeout<F>(mut self, predicate: F) -> Result<Vec<u8>, Error>
+impl ReadUntil {
+    pub fn new<T>(mut reader: T, timeout: Duration) -> ReadUntil
     where
-        F: Fn(&mut [u8]) -> bool,
+        T: Read + Send + Sync + 'static,
     {
-        let (tx, rx) = channel();
+        let (tx, rx) = sync_channel(CHANNEL_BUFFER_SIZE_BYTES);
 
-        thread::spawn(move || {
-            loop {
+        thread::spawn(move || loop {
+            let mut buffer = [0_u8; 1];
+            let _ = reader.read(&mut buffer).expect("Failed to read a byte");
 
-                thread::sleep(Duration::from_millis(100));
-
-                let mut buf = [0_u8; 1];
-                let _ = self.read(&mut buf).expect("Failed to read into buf");
-                match tx.send(buf[0]) {
-                    Ok(_) => {},
-                    Err(_) => {}
-                }
+            match tx.send(buffer[0]) {
+                Ok(_) => {}
+                Err(_) => break,
             }
         });
 
+        ReadUntil {
+            receiver: rx,
+            timeout,
+        }
+    }
+}
+
+impl ReadUntilOrTimeout for ReadUntil {
+    fn until_or_timeout<F>(&self, predicate: F) -> Result<Vec<u8>, ReadUntilError>
+    where
+        F: Fn(&mut [u8]) -> bool,
+    {
         let now = Instant::now();
         let mut result = vec![];
         loop {
 
-            if now.elapsed().as_secs() > 2 {
-                return Err(Error::from_raw_os_error(1));
+            if now.elapsed() > self.timeout {
+                return Err(ReadUntilError::Timeout);
             }
 
-            thread::sleep(Duration::from_millis(100));
-
-            match rx.try_recv() {
+            match self.receiver.try_recv() {
                 Ok(data) => result.push(data),
-                Err(_) => continue
+                Err(err) => {
+                    match err {
+                        TryRecvError::Empty => thread::sleep(Duration::from_millis(SLEEP_DURATION_WHEN_AWAITING_DATA_MS)),
+                        TryRecvError::Disconnected => return Err(ReadUntilError::Disconnected),
+                    }
+                },
             }
 
             if predicate(&mut result) {
@@ -62,18 +71,30 @@ where
     }
 }
 
+pub trait ReadUntilOrTimeout {
+    fn until_or_timeout<F>(&self, predicate: F) -> Result<Vec<u8>, ReadUntilError>
+    where
+        F: Fn(&mut [u8]) -> bool,
+        F: Send;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Cursor;
-    use std::time::Duration;
-    
+    use std::sync::mpsc::channel;
 
     #[test]
     fn it_filters_based_on_predicate() {
         let cursor = Cursor::new(vec![1, 2, 3, 4, 5, 6, 7]);
-        let result = cursor.read_until_or_timeout(|x| x.contains(&5));
-        assert_eq!(result.unwrap(), vec![1, 2, 3, 4, 5]);
+        let timeout = Duration::from_secs(2);
+        let reader = ReadUntil::new(cursor, timeout);
+
+        let result1 = &reader.until_or_timeout(|x| x.contains(&5)).unwrap();
+        let result2 = &reader.until_or_timeout(|x| x.contains(&7)).unwrap();
+
+        assert_eq!(result1, &vec![1, 2, 3, 4, 5]);
+        assert_eq!(result2, &vec![6, 7]);
     }
 
     #[test]
@@ -82,12 +103,16 @@ mod tests {
 
         thread::spawn(move || {
             let cursor = Cursor::new(vec![1, 2, 3, 4, 5, 6, 7]);
-            let r = cursor.read_until_or_timeout(|x| x.contains(&10));
-            tx.send(r).unwrap();
+            let timeout = Duration::from_millis(10);
+
+            let reader = ReadUntil::new(cursor, timeout);
+            let result = reader.until_or_timeout(|x| x.contains(&10));
+
+            tx.send(result).unwrap();
         });
 
-        let res = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let result = rx.recv_timeout(Duration::from_millis(100)).unwrap();
 
-        assert_eq!(res.is_err(), true);
+        assert_eq!(result.is_err(), true);
     }
 }
