@@ -76,6 +76,10 @@ pub trait ReadUntilOrTimeout {
     where
         F: Fn(&mut [u8]) -> bool,
         F: Send;
+
+    fn until_contains_or_timeout(&self, pattern: String) -> Result<Vec<u8>, ReadUntilError> {
+            self.until_or_timeout(|data| String::from_utf8_lossy(data).contains(&pattern))
+    }
 }
 
 #[cfg(test)]
@@ -114,5 +118,17 @@ mod tests {
         let result = rx.recv_timeout(Duration::from_millis(100)).unwrap();
 
         assert_eq!(result.is_err(), true);
+    }
+
+    #[test]
+    fn it_filters_based_on_string() {
+        let cursor = Cursor::new(String::from("hello world"));
+        let expected_data = &"hello wo".as_bytes().to_vec();
+        let timeout = Duration::from_secs(2);
+        let reader = ReadUntil::new(cursor, timeout);
+
+        let result = &reader.until_contains_or_timeout("llo wo".to_string()).unwrap();
+
+        assert_eq!(result, expected_data);
     }
 }
