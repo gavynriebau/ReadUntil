@@ -42,7 +42,7 @@ impl ReadUntil {
 }
 
 impl ReadUntilOrTimeout for ReadUntil {
-    fn until_or_timeout<F>(&self, predicate: F) -> Result<Vec<u8>, ReadUntilError>
+    fn until<F>(&self, predicate: F) -> Result<Vec<u8>, ReadUntilError>
     where
         F: Fn(&mut [u8]) -> bool,
     {
@@ -72,13 +72,13 @@ impl ReadUntilOrTimeout for ReadUntil {
 }
 
 pub trait ReadUntilOrTimeout {
-    fn until_or_timeout<F>(&self, predicate: F) -> Result<Vec<u8>, ReadUntilError>
+    fn until<F>(&self, predicate: F) -> Result<Vec<u8>, ReadUntilError>
     where
         F: Fn(&mut [u8]) -> bool,
         F: Send;
 
-    fn until_contains_or_timeout(&self, pattern: String) -> Result<Vec<u8>, ReadUntilError> {
-            self.until_or_timeout(|data| String::from_utf8_lossy(data).contains(&pattern))
+    fn until_contains(&self, pattern: String) -> Result<Vec<u8>, ReadUntilError> {
+            self.until(|data| String::from_utf8_lossy(data).contains(&pattern))
     }
 }
 
@@ -94,8 +94,8 @@ mod tests {
         let timeout = Duration::from_secs(2);
         let reader = ReadUntil::new(cursor, timeout);
 
-        let result1 = &reader.until_or_timeout(|x| x.contains(&5)).unwrap();
-        let result2 = &reader.until_or_timeout(|x| x.contains(&7)).unwrap();
+        let result1 = &reader.until(|x| x.contains(&5)).unwrap();
+        let result2 = &reader.until(|x| x.contains(&7)).unwrap();
 
         assert_eq!(result1, &vec![1, 2, 3, 4, 5]);
         assert_eq!(result2, &vec![6, 7]);
@@ -110,7 +110,7 @@ mod tests {
             let timeout = Duration::from_millis(10);
 
             let reader = ReadUntil::new(cursor, timeout);
-            let result = reader.until_or_timeout(|x| x.contains(&10));
+            let result = reader.until(|x| x.contains(&10));
 
             tx.send(result).unwrap();
         });
@@ -127,7 +127,7 @@ mod tests {
         let timeout = Duration::from_secs(2);
         let reader = ReadUntil::new(cursor, timeout);
 
-        let result = &reader.until_contains_or_timeout("llo wo".to_string()).unwrap();
+        let result = &reader.until_contains("llo wo".to_string()).unwrap();
 
         assert_eq!(result, expected_data);
     }
